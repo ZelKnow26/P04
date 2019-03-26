@@ -1,0 +1,275 @@
+\documentclass[a4paper, 11pt]{article}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{caption,subcaption}
+\geometry{scale=0.8}
+\linespread{1.5}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{enumitem}
+
+\usepackage{listings}
+\usepackage{fontspec}
+\setmonofont{Consolas}
+\usepackage[linesnumbered,boxed]{algorithm2e}    
+\setenumerate[1]{itemsep=0pt,partopsep=0pt,parsep=\parskip,topsep=0pt}
+\setitemize[1]{itemsep=0pt,partopsep=0pt,parsep=\parskip,topsep=0pt}
+\setdescription{itemsep=0pt,partopsep=0pt,parsep=\parskip,topsep=0pt}
+
+
+\title{	
+\normalfont \normalsize
+\rule{\textwidth}{0.5pt} \\[0.4cm] % Thin top horizontal rule
+\huge  Interest Rate Swaps\\ % The assignment title
+\rule{\textwidth}{2pt} \\[0.5cm] % Thick bottom horizontal rule
+\author{Jin Hangyu}
+\date{\normalsize\today}
+}
+
+\begin{document}
+\maketitle
+\section{Section 1}
+\subsection{1)}
+$$B_{fix}=\sum_{i=1}^{n}N\times \frac{rate}{2}\times e^{-r_it_i}+(N+N\times \frac{rate}{2})\times e^{-r_it_i}$$
+\subsection{2)}
+$$B_{fl}=(N+\frac{F_0+s}{2}\times N)\times e^{-[F_0(1+r_n)+s]\cdot \frac{1}{2}}$$
+\section{Section 2}
+\subsection{Answer}
+\begin{itemize}
+\item The fixed semiannual swap rate is 0.042036934468360466
+
+\item The constant spread s is 0.033061570689082144
+
+\item The PV of the swap position on 12 August 2013 is 326.8021160986913
+
+\item The PV of the swap position on 12 February 2014 is 1491.6314338400964
+\end{itemize}
+\subsection{Code}
+\begin{lstlisting}[language = C++, numbers=left, 
+         numberstyle=\tiny,keywordstyle=\color{blue!70},
+         commentstyle=\color{red!50!green!50!blue!50},frame=shadowbox,
+         rulesepcolor=\color{red!20!green!20!blue!20},basicstyle=\ttfamily]
+
+#!/usr/bin/env python
+# coding: utf-8
+
+# <img src="http://hilpisch.com/tpq_logo.png" alt="The Python Quants" width="45%" align="right" border="4">
+
+# # Interest Rate Swaps
+
+from scipy.optimize import fmin
+import dx
+import time
+import numpy as np
+import pandas as pd
+import datetime as dt
+from pylab import plt
+plt.style.use('seaborn')
+
+
+# ## OIS Data & Discounting
+
+# UK OIS Spot Rates Yield Curve
+oiss = pd.read_excel('Data.xls', 'Sheet1', index_col=0)
+
+# use years as index
+oiss = oiss.T
+
+
+# only date information for columns, no time
+oiss.columns = [dt.date(year=int(str(d)[0:4]), month=int(
+    str(d)[4:6]), day=int(str(d)[6:8])) for d in oiss.columns]
+startdate = dt.date(year=2013, month=6, day=12)
+rows_front = [startdate + dt.timedelta(days=int(d[:-1]))
+              for d in oiss.index if d[-1] == 'D']
+rows_end = [startdate + dt.timedelta(days=int(int(d[:-1])*30.42))
+            for d in oiss.index if d[-1] == 'M']
+rows_end = [d.replace(day=12) for d in rows_end]
+rows_front.extend(rows_end)
+oiss.index = rows_front
+
+
+# Next we replace the **year fraction index** by a **DatetimeIndex**.
+
+# Let us have a look at the **most current data**, i.e. the term structure, of the data set.
+
+# This data is used to instantiate a `deterministic_short_rate` **model for risk-neutral discounting** purposes.
+
+# generate deterministic short rate model based on UK OIS curve
+ois = dx.deterministic_short_rate('ois', list(
+    zip(oiss.index, oiss[startdate].values / 100)))
+
+# example dates and corresponding discount factors
+dr = pd.date_range('2015-1', periods=4, freq='6m').to_pydatetime()
+
+
+# ## Libor Market Data
+
+# UK Libor foward rates
+libf = pd.read_excel('Data.xls', 'Sheet2', index_col=0)
+# use years as index
+libf = libf.T
+
+# only date information for columns, no time
+libf.columns = [dt.date(year=int(str(d)[0:4]), month=int(
+    str(d)[4:6]), day=int(str(d)[6:8])) for d in libf.columns]
+
+startdate = dt.date(year=2013, month=6, day=12)
+rows_front = [startdate + dt.timedelta(days=int(d[:-1]))
+              for d in libf.index if d[-1] == 'D']
+rows_end = [startdate + dt.timedelta(days=int(int(d[:-1])*30.42))
+            for d in libf.index if d[-1] == 'M']
+rows_end = [d.replace(day=12) for d in rows_end]
+rows_front.extend(rows_end)
+libf.index = rows_front
+
+
+# And the short end of the **Libor term sturcture** visualized.
+
+#libf[startdate].plot(figsize=(10, 6))
+
+# ## Model Calibration
+
+# Next, equipped with the Libor data, we calibrate the **square-root diffusion short rate model**. A bit of data preparation:
+
+t = libf.index
+f = libf[startdate].values / 100
+initial_value = 0.005
+
+
+# A **mean-squared error (MSE)** function to be minimized during calibration.
+
+
+def srd_forward_error(p0):
+    global initial_value, f, t
+    if p0[0] < 0 or p0[1] < 0 or p0[2] < 0:
+        return 100
+    f_model = dx.srd_forwards(initial_value, p0, t)
+    MSE = np.sum((f - f_model) ** 2) / len(f)
+    return MSE
+
+
+# And the **calibration** itself.
+
+opt = fmin(srd_forward_error, (4.0, 2.0, 0.2),
+           maxiter=1000, maxfun=1000)
+
+'''
+plt.figure(figsize=(10, 6))
+plt.plot(t, f, label='market forward rates')
+plt.plot(t, dx.srd_forwards(initial_value, opt, t), 'r.', label='model forward rates')
+plt.gcf().autofmt_xdate(); plt.legend(loc=0)
+'''
+
+
+# ## Floating Rate Modeling
+
+# The optimal parameters from the calibration are used to model the **floating rate (3m Libor rate)**.
+
+grid = [startdate.replace(year=int(startdate.year+(i/2)), month=6)
+        for i in range(10)]
+grid[0] = dt.date(year=2013, month=12, day=12)
+grid[1] = grid[0]
+fix_rate = 2 * np.exp(oiss[startdate.replace(month=12)][grid[-1]]*6) / np.sum(
+    [np.exp(oiss[startdate.replace(month=12)][grid[i]]*(i+1)/2) for i in range(10)])
+fix_rate /= 100
+print('The fixed semiannual swap rate is '+str(fix_rate))
+
+# market environment
+me_srd = dx.market_environment('me_srd', dt.datetime(2013, 6, 12))
+
+# square-root diffusion
+me_srd.add_constant('initial_value', 0.033061571)
+me_srd.add_constant('kappa', opt[0])
+me_srd.add_constant('theta', opt[1])
+me_srd.add_constant('volatility', opt[2])
+me_srd.add_curve('discount_curve', ois)
+# OIS discounting object
+me_srd.add_constant('currency', 'USD')
+me_srd.add_constant('paths', 10000)
+me_srd.add_constant('frequency', 'w')
+me_srd.add_constant('starting_date', me_srd.pricing_date)
+me_srd.add_constant('final_date', dt.datetime(2018, 6, 12))
+
+srd = dx.square_root_diffusion('srd', me_srd)
+
+paths = srd.get_instrument_values()
+
+
+#plt.figure(figsize=(10, 6))
+#plt.plot(srd.time_grid, paths[:, :6])
+
+
+# ## Interest Rate Swap
+
+# ### Modeling
+
+# First, the market environment with all the **parameters** needed.
+
+# The instantiation of the **valuation object**.
+
+me_irs = dx.market_environment('irs', me_srd.pricing_date)
+me_irs.add_constant('fixed_rate', fix_rate)
+me_irs.add_constant('trade_date', me_srd.pricing_date)
+me_irs.add_constant('effective_date', me_srd.pricing_date)
+me_irs.add_constant('payment_date', dt.datetime(2013, 6, 12))
+me_irs.add_constant('payment_day', 12)
+me_irs.add_constant('termination_date', me_srd.get_constant('final_date'))
+me_irs.add_constant('currency', 'USD')
+me_irs.add_constant('notional', 100000)
+me_irs.add_constant('tenor', '6m')
+me_irs.add_constant('counting', 'ACT/360')
+
+# 0.033061571
+
+
+def pv_of_startdate(initial):
+    global me_srd, me_irs
+    me_srd.add_constant('initial_value', initial)
+    srd = dx.square_root_diffusion('srd', me_srd)
+    irs = dx.interest_rate_swap('irs', srd, me_irs)
+    return np.abs(irs.present_value(fixed_seed=True))
+
+
+opt = fmin(pv_of_startdate, 0.03, xtol=0.000001, ftol=0.000001,
+           maxiter=100, maxfun=1000)
+print('The constant spread s is '+str(opt[0]))
+
+me_srd.add_constant('initial_value', opt)
+srd = dx.square_root_diffusion('srd', me_srd)
+irs = dx.interest_rate_swap('irs', srd, me_irs)
+
+
+# ### Valuation
+
+# The **present value** of the interest rate swap given the assumption, in particular, of the fixed rate.
+
+# %time irs.present_value(fixed_seed=True)
+
+
+# You can also generate a **full output of all present values** per simulation path.
+
+me_irs.add_constant('payment_date', dt.datetime(2013, 7, 12))
+irs = dx.interest_rate_swap('irs', srd, me_irs)
+print("The PV of the swap position on 12 August 2013 is " +
+      str(irs.present_value(fixed_seed=True)))
+
+me_irs.add_constant('payment_date', dt.datetime(2014, 2, 12))
+irs = dx.interest_rate_swap('irs', srd, me_irs)
+print("The PV of the swap position on 12 February 2014 is " +
+      str(irs.present_value(fixed_seed=True)))
+
+\end{lstlisting}
+
+
+%\clearpage
+%\bibliography{E:/Papers/LiuLab}
+%\bibliographystyle{apalike}
+\end{document} 
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: t
+%%% End:
